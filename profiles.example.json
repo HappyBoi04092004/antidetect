@@ -1,0 +1,23 @@
+[
+  {
+    "id": "example_profile",
+    "name": "Demo Profile 1",
+    "group": "Nhóm Mặc Định",
+    "os": "windows",
+    "proxy": "127.0.0.1:8080:username:password",
+    "start_url": "https://www.tiktok.com",
+    "screen": "1920x1080",
+    "locale": "en-US",
+    "block_images": false,
+    "block_webrtc": true,
+    "humanize": true,
+    "notes": "demo_user|demo_pass|demo@outlook.com|demo_passmail|demo_refreshtoken|demo_clientid|demo_backup@mail.com",
+    "path": "profiles/example_profile",
+    "created_at": "2026-11-01 12:00:00",
+    "headless": false,
+    "disable_coop": false,
+    "canvas_noise": false,
+    "disable_ublock": false,
+    "addons": ""
+  }
+]

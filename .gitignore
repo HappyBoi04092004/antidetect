@@ -1,0 +1,59 @@
+# Virtual Environment
+.venv/
+env/
+venv/
+ENV/
+
+# Python cache & build
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.pytest_cache/
+
+# OS specific files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+Desktop.ini
+
+# App Bundle & Archives
+*.app/
+*.zip
+*.tar.gz
+*.dmg
+
+# User Profile Data & Sessions (CRITICAL SECURITY)
+profiles/
+profiles.json
+*.db
+*.sqlite3
+
+# Binaries & Media downloads
+bin/ffmpeg*
+bin/ffprobe*
+downloads/*
+!downloads/.gitkeep
+
+# Windows package binaries & build artifacts
+Camoufox_Antidetect_Windows/bin/ffmpeg*
+Camoufox_Antidetect_Windows/bin/ffprobe*
+Camoufox_Antidetect_Windows/downloads/*
+!Camoufox_Antidetect_Windows/downloads/.gitkeep
+Camoufox_Antidetect_Windows/profiles/
+Camoufox_Antidetect_Windows/profiles.json
+Camoufox_Antidetect_Windows/dist/
+Camoufox_Antidetect_Windows/build/
+Camoufox_Antidetect_Windows/*.spec
+
+# External Camoufox source clone (installed via pip camoufox[geoip])
+camoufox/
+
+# Logs & Environment
+*.log
+.env
+.env.*
