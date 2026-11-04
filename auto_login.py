@@ -262,7 +262,7 @@ def handle_tiktok_verification_challenge(page, email: str, refresh_token: str, c
     page.wait_for_timeout(5000)
     return True
 
-def auto_login_tiktok(page, creds: dict, logger=print) -> bool:
+def auto_login_tiktok(page, creds: dict, target_url: str = "https://www.tiktok.com", logger=print) -> bool:
     """
     Quy trình tự động đăng nhập TikTok hoàn chỉnh:
     1. Kiểm tra cookie / session đã có sẵn chưa
@@ -292,6 +292,13 @@ def auto_login_tiktok(page, creds: dict, logger=print) -> bool:
         # 1. Kiểm tra xem đã có phiên đăng nhập cũ chưa
         if is_tiktok_logged_in(page):
             logger("[✓] Tài khoản TikTok này đã được đăng nhập từ trước (cookie hợp lệ)! Bỏ qua đăng nhập.")
+            dest = target_url if target_url and target_url != "about:blank" else "https://www.tiktok.com"
+            if page.url == "about:blank" or not page.url:
+                try:
+                    logger(f"[*] Đang chuyển đến trang web: {dest}")
+                    page.goto(dest, timeout=45000, wait_until="domcontentloaded")
+                except Exception as e:
+                    logger(f"[!] Không thể tải {dest}: {e}")
             return True
 
         # Ghi nhận mã OTP gần nhất trong mail nếu có

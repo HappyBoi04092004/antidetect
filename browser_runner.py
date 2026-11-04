@@ -122,20 +122,25 @@ def main():
     try:
         with Camoufox(**camoufox_kwargs) as context:
             page = context.pages[0] if context.pages else context.new_page()
-            
+
+            target_url = args.url.strip() if args.url.strip() else "https://www.tiktok.com"
+
             if should_auto_login and autologin_cfg and autologin_cfg.get("creds"):
                 print(f"[*] Kích hoạt tự động đăng nhập {app_type.upper()}...")
                 try:
                     from auto_login import auto_login_tiktok
                     if app_type.lower() == "tiktok":
-                        auto_login_tiktok(page, autologin_cfg["creds"], logger=print)
+                        auto_login_tiktok(page, autologin_cfg["creds"], target_url=target_url, logger=print)
                 except Exception as e:
                     print(f"[!] Lỗi khi tự động đăng nhập: {e}")
-            elif args.url.strip():
+
+            # Đảm bảo sau khi xử lý (hoặc nếu đã đăng nhập từ trước), trình duyệt luôn mở target_url thay vì đứng im ở about:blank
+            if page.url == "about:blank" or not page.url:
                 try:
-                    page.goto(args.url.strip(), timeout=60000)
+                    print(f"[*] Điều hướng tới trang web: {target_url}")
+                    page.goto(target_url, timeout=60000, wait_until="domcontentloaded")
                 except Exception as e:
-                    print(f"[!] Không thể tải ngay URL ({args.url}): {e}")
+                    print(f"[!] Không thể tải ngay URL ({target_url}): {e}")
 
             print("[*] Trình duyệt đang hoạt động. Giữ cửa sổ mở không giới hạn thời gian...")
 

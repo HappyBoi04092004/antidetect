@@ -131,6 +131,15 @@ class Api:
         runner_path = os.path.join(base_dir, "browser_runner.py")
         profile_dir = os.path.abspath(os.path.join(base_dir, p["path"]))
 
+        # Dọn dẹp file khóa cũ nếu phiên trước bị crash hoặc tắt đột ngột
+        for lock_name in [".parentlock", "lock", "parent.lock"]:
+            lp = os.path.join(profile_dir, lock_name)
+            if os.path.exists(lp):
+                try:
+                    os.remove(lp)
+                except Exception:
+                    pass
+
         cmd = [
             sys.executable,
             runner_path,
@@ -357,6 +366,9 @@ class Api:
 
     def open_warmup_browser(self, profile_id, target_url="https://www.tiktok.com/tiktokstudio/upload"):
         """Mở Camoufox để người dùng kiểm tra hoặc đăng nhập thủ công."""
+        if profile_id in self.running_processes and self.running_processes[profile_id].poll() is None:
+            return {"ok": False, "msg": "Profile này đang chạy rồi! Hãy đóng cửa sổ trình duyệt hiện tại trước."}
+
         p = self.profile_mgr.get_profile(profile_id)
         if not p:
             return {"ok": False, "msg": "Không tìm thấy Profile!"}
