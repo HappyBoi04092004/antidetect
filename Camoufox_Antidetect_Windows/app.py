@@ -474,12 +474,20 @@ class Api:
             return {"ok": False, "msg": "Chưa nhập Gemini API Key!"}
         try:
             from google import genai
+            from ai_seo_helper import AVAILABLE_GEMINI_MODELS
             client = genai.Client(api_key=api_key)
-            response = client.models.generate_content(
-                model="gemini-2.5-flash",
-                contents="Ping! Trả lời đúng 1 từ: OK",
-            )
-            return {"ok": True, "msg": f"Kết nối Gemini AI thành công: {response.text.strip()}"}
+            last_err = None
+            for m in AVAILABLE_GEMINI_MODELS:
+                try:
+                    response = client.models.generate_content(
+                        model=m,
+                        contents="Ping! Trả lời đúng 1 từ: OK",
+                    )
+                    return {"ok": True, "msg": f"Kết nối Gemini AI thành công! (Đang dùng: {m})"}
+                except Exception as e:
+                    last_err = e
+                    continue
+            return {"ok": False, "msg": str(last_err)}
         except Exception as e:
             return {"ok": False, "msg": str(e)}
 

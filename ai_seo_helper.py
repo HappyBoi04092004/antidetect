@@ -37,6 +37,38 @@ class VideoSEOMetadataSchema(BaseModel):
     description: str = Field(description="Đoạn mô tả SEO chi tiết 2-4 câu giải thích nội dung video và có lời kêu gọi hành động (Subscribe, Follow, Like).")
     hashtags: list[str] = Field(description="10-15 hashtag viết thường có dấu # ở đầu, 70% ngôn ngữ bản địa và 30% tiếng Anh ngách toàn cầu.")
 
+AVAILABLE_GEMINI_MODELS = [
+    "gemini-flash-lite-latest",
+    "gemini-3.5-flash",
+    "gemini-3.5-flash-lite",
+    "gemini-3.8-flash",
+    "gemini-flash-latest",
+]
+
+def generate_with_fallback(client, contents, config=None):
+    last_err = None
+    for model_name in AVAILABLE_GEMINI_MODELS:
+        try:
+            if config:
+                return client.models.generate_content(
+                    model=model_name,
+                    contents=contents,
+                    config=config
+                )
+            else:
+                return client.models.generate_content(
+                    model=model_name,
+                    contents=contents
+                )
+        except Exception as e:
+            last_err = e
+            err_msg = str(e)
+            if any(code in err_msg for code in ["503", "UNAVAILABLE", "404", "NOT_FOUND", "429", "RESOURCE_EXHAUSTED"]):
+                print(f"[Gemini Auto-Fallback]: Model '{model_name}' overloaded/unavailable ({err_msg[:60]}). Switching to next model...")
+                continue
+            raise e
+    raise last_err
+
 def clean_filename_to_title(filename_or_topic: str) -> str:
     """Chuyển tên file video (VD: meo_nau_an_nhanh_v1.mp4) thành tiêu đề sạch dễ đọc."""
     base = os.path.splitext(os.path.basename(filename_or_topic))[0]
@@ -71,8 +103,8 @@ Yêu cầu:
 1. Viết `hook_caption` bằng ngôn ngữ {target_lang}, ngắn gọn dưới 120 ký tự, hấp dẫn, giữ đúng ngữ cảnh video.
 2. Tạo 10-12 `hashtags` bám sát nội dung: 70% hashtag bản địa theo ngôn ngữ {target_lang} và 30% hashtag tiếng Anh ngách toàn cầu.
 """
-        response = client.models.generate_content(
-            model="gemini-2.5-flash",
+        response = generate_with_fallback(
+            client,
             contents=prompt,
             config=types.GenerateContentConfig(
                 response_mime_type="application/json",
@@ -97,7 +129,7 @@ def generate_seo_metadata(
     custom_notes: str = ""
 ) -> dict:
     """
-    Sử dụng Gemini AI (gemini-2.5-flash) để tạo bộ dữ liệu SEO hoàn chỉnh:
+    Sử dụng Gemini AI (gemini-3.8-flash) để tạo bộ dữ liệu SEO hoàn chỉnh:
     - Tiêu đề giật tít (<90 ký tự, tối ưu YouTube Shorts & TikTok)
     - Câu mở đầu hấp dẫn (Hook Caption)
     - Mô tả SEO chi tiết có lời kêu gọi hành động (Call To Action)
@@ -115,7 +147,7 @@ def generate_seo_metadata(
         try:
             client = genai.Client(api_key=api_key)
             prompt = f"""
-Bạn là chuyên gia Content Creator & Viral SEO hàng đầu thế giới cho TikTok và YouTube Shorts.
+Bạn là TikTok Viral Strategist & Video Optimization Specialist hàng đầu từ Agency Agents (msitarzewski/agency-agents). Áp dụng quy tắc ngắt dòng suy nghĩ (Pattern Interrupt), giật Hook 3s đầu và giữ chân người xem.
 Hãy phân tích thông tin video dưới đây và sáng tạo bộ Metadata SEO hoàn chỉnh tối ưu thuật toán tìm kiếm và đề xuất FYP:
 - Tên file / Chủ đề video: "{clean_topic}"
 - Ngách nội dung (Niche): "{niche_hint if niche_hint else 'Tự động nhận diện theo chủ đề'}"
@@ -128,8 +160,8 @@ Yêu cầu chi tiết:
 3. `description`: Đoạn mô tả SEO chi tiết 2-4 câu, tóm tắt điểm hấp dẫn nhất của video và có lời kêu gọi hành động (Follow / Like / Đăng ký kênh).
 4. `hashtags`: 10-15 hashtags viết thường bắt đầu bằng '#', bám sát chủ đề ({target_lang} 70%, tiếng Anh phổ quát 30%).
 """
-            response = client.models.generate_content(
-                model="gemini-2.5-flash",
+            response = generate_with_fallback(
+                client,
                 contents=prompt,
                 config=types.GenerateContentConfig(
                     response_mime_type="application/json",
