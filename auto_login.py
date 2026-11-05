@@ -1,3 +1,18 @@
+import sys
+import os
+
+# Đảm bảo UTF-8 cho stdout/stderr trên Windows
+if sys.stdout is not None:
+    try:
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass
+if sys.stderr is not None:
+    try:
+        sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass
+
 import time
 import re
 import requests

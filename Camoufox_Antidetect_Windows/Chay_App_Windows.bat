@@ -4,14 +4,15 @@ cd /d "%~dp0"
 title Camoufox Antidetect Pro
 
 if not exist ".venv\Scripts\python.exe" (
-    echo [!] Chưa tìm thấy môi trường cài đặt.
-    echo Đang tự động chạy file cài đặt Cai_Dat_Windows.bat...
+    echo [!] Chua tim thay moi truong cai dat .venv.
+    echo Dang tu dong chay file cai dat Cai_Dat_Windows.bat...
     call Cai_Dat_Windows.bat
 )
 
-:: Khởi chạy ứng dụng không hiện cửa sổ cmd đen
-start "" ".venv\Scripts\pythonw.exe" app.py
+echo [*] Dang khoi dong Camoufox Antidetect Studio...
+".venv\Scripts\python.exe" app.py
 if %errorlevel% neq 0 (
-    ".venv\Scripts\python.exe" app.py
+    echo.
+    echo [LOI] Co loi xay ra khi chay ung dung. Nhan phim bat ky de thoat...
+    pause >nul
 )
-

@@ -179,7 +179,10 @@ class Api:
         try:
             log_path = "/tmp/camoufox_browser.log" if sys.platform == "darwin" else os.path.join(base_dir, "camoufox_browser.log")
             log_file = open(log_path, "a", encoding="utf-8")
-            proc = subprocess.Popen(cmd, cwd=base_dir, stdout=log_file, stderr=log_file)
+            env = os.environ.copy()
+            env["PYTHONIOENCODING"] = "utf-8"
+            env["PYTHONUTF8"] = "1"
+            proc = subprocess.Popen(cmd, cwd=base_dir, stdout=log_file, stderr=log_file, env=env)
             self.running_processes[profile_id] = proc
             return {"ok": True, "msg": "Đã khởi chạy trình duyệt Camoufox thành công"}
         except Exception as e:

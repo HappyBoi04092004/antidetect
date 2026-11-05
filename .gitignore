@@ -58,3 +58,9 @@ camoufox/
 .env
 .env.*
 
+
+
+# Root build artifacts
+build/
+dist/
+*.spec
