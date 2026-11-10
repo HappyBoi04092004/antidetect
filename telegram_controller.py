@@ -8,7 +8,8 @@ from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
 from platform_utils import load_config
 from post_manager import (
     get_video_record, update_video_status, add_tracked_channel,
-    get_all_channels, force_publish_draft, delete_tiktok_video_and_file
+    get_all_channels, force_publish_draft, delete_tiktok_video_and_file,
+    get_all_channels_kpi_summary, execute_compensation, audit_daily_videos
 )
 
 _bot_instance: telebot.TeleBot | None = None
@@ -46,6 +47,169 @@ def build_action_keyboard(video_id: str, action: str, yt_video_url: str = "") ->
     btn_list_ch = InlineKeyboardButton("📋 DS Kênh đang chạy", callback_data="cmd:list_channels")
     markup.add(btn_add_ch, btn_list_ch)
     return markup
+
+def send_tiktok_beta_success_report(
+    source_handle: str,
+    account_id: str,
+    tiktok_user: str,
+    vpn_region: str,
+    profile_name: str,
+    shorts_title: str,
+    quality_str: str,
+    duration: float,
+    check_status: str,
+    caption_text: str,
+    youtube_url: str
+):
+    """
+    Gửi thông báo ĐĂNG VIDEO THÀNH CÔNG theo đúng mẫu quy chuẩn:
+    🎉 [TIKTOK BETA] ĐĂNG VIDEO THÀNH CÔNG!
+    """
+    bot = get_bot()
+    if not bot:
+        return
+    cfg = load_config()
+    chat_id = cfg.get("telegram_chat_id", "").strip() or os.getenv("TELEGRAM_CHAT_ID", "").strip()
+    if not chat_id:
+        return
+
+    now_str = datetime.now().strftime("%H:%M:%S - %d/%m/%Y")
+    safe_channel = html.escape(source_handle or "Kênh nguồn")
+    safe_acc = html.escape(account_id or "acc_n/a")
+    safe_user = html.escape(tiktok_user or "N/A")
+    safe_title = html.escape(shorts_title)
+    safe_caption = html.escape(caption_text)
+
+    msg = (
+        f"🎉 <b>[TIKTOK BETA] ĐĂNG VIDEO THÀNH CÔNG!</b>\n\n"
+        f"👤 <b>Kênh nhận:</b> {safe_channel} ({safe_acc})\n"
+        f"🎵 <b>TikTok User:</b> {safe_user}\n"
+        f"🌐 <b>Vùng VPN:</b> {vpn_region} | <b>Profile:</b> {profile_name}\n"
+        f"----------------------------------------\n"
+        f"🎬 <b>Tiêu đề Shorts:</b> {safe_title}\n"
+        f"📐 <b>Chất lượng thực tế:</b> {quality_str}\n"
+        f"⏱ <b>Thời lượng:</b> {duration}s (Chuẩn ≤ 59s)\n"
+        f"🛡 <b>Kiểm tra:</b> {check_status}\n"
+        f"⏰ <b>Thời gian đăng:</b> {now_str}\n\n"
+        f"📝 <b>Caption đăng tải:</b>\n"
+        f"<blockquote>{safe_caption}</blockquote>\n\n"
+        f"🔗 <a href=\"{youtube_url}\">Xem video gốc trên YouTube</a>\n\n"
+        f"🤖 <i>Thông báo tự động từ Hệ thống Nuôi Kênh TikTok Beta</i>"
+    )
+    markup = InlineKeyboardMarkup()
+    if youtube_url:
+        markup.add(InlineKeyboardButton("🔗 Xem video gốc trên YouTube", url=youtube_url))
+    try:
+        bot.send_message(chat_id, msg, reply_markup=markup, disable_web_page_preview=True)
+    except Exception as e:
+        print(f"[Telegram Success Report Error]: {e}")
+
+def send_daily_kpi_report(target_date: str = None):
+    """
+    Thống kê tiến độ cuối ngày (22:01) chia 2 nhóm:
+    - Kênh đã đạt chỉ tiêu (2/2 video)
+    - Kênh chưa đủ chỉ tiêu (0/2 video, thiếu, tạm dừng)
+    - Nút duyệt đăng bù trực tiếp
+    """
+    bot = get_bot()
+    if not bot:
+        return
+    cfg = load_config()
+    chat_id = cfg.get("telegram_chat_id", "").strip() or os.getenv("TELEGRAM_CHAT_ID", "").strip()
+    if not chat_id:
+        return
+
+    summary = get_all_channels_kpi_summary(target_date)
+    total = summary["total"]
+    completed = summary["completed"]
+    incomplete = summary["incomplete"]
+    total_missing = summary["total_missing"]
+
+    comp_lines = [f"✅ <b>KÊNH ĐÃ ĐẠT CHỈ TIÊU ({len(completed)}/{total}):</b>"]
+    if completed:
+        for c in completed:
+            comp_lines.append(f"• {c['source_handle']}: {c['posted']}/{c['daily_target']} video")
+    else:
+        comp_lines.append("• <i>Chưa có kênh nào đạt chỉ tiêu hôm nay.</i>")
+
+    incomp_lines = [f"\n⚠️ <b>KÊNH CHƯA ĐỦ CHỈ TIÊU ({len(incomplete)}/{total}):</b>"]
+    if incomplete:
+        for c in incomplete:
+            paused_str = " (Đang tạm dừng)" if c.get("status") == "PAUSED" else ""
+            incomp_lines.append(f"• {c['source_handle']}: {c['posted']}/{c['daily_target']} video (👉 Thiếu {c['missing']}){paused_str}")
+    else:
+        incomp_lines.append("• <i>Không có kênh nào thiếu chỉ tiêu!</i>")
+
+    msg_parts = [
+        "\n".join(comp_lines),
+        "\n".join(incomp_lines),
+        "________________________________________\n",
+        f"📌 <b>Tổng kết:</b> Cần đăng bù <b>{total_missing}</b> video cho <b>{len(incomplete)}</b> kênh.\n",
+        "👉 <b>Bạn có muốn duyệt đăng bù cho các kênh này ngay bây giờ không?</b>\n"
+        "(Bấm nút bên dưới hoặc gõ <code>/bu1</code>, <code>/duyet</code>, <code>OK</code>)"
+    ]
+    full_msg = "\n".join(msg_parts)
+
+    markup = InlineKeyboardMarkup(row_width=1)
+    if total_missing > 0:
+        markup.add(
+            InlineKeyboardButton("🚀 DUYỆT BÙ 1 VIDEO / KÊNH", callback_data="kpi:bu1"),
+            InlineKeyboardButton("⚡️ DUYỆT BÙ ĐỦ 2 VIDEO (TẤT CẢ)", callback_data="kpi:bu_all"),
+            InlineKeyboardButton("❌ BỎ QUA HÔM NAY", callback_data="kpi:skip")
+        )
+    try:
+        bot.send_message(chat_id, full_msg, reply_markup=markup if total_missing > 0 else None)
+    except Exception as e:
+        print(f"[Telegram KPI Report Error]: {e}")
+
+def send_daily_audit_report(target_date: str = None):
+    """
+    Báo cáo kiểm định video đã đăng (22:03) qua Bot TikTok Check Video:
+    Views, Likes, Shadowban, Trùng lặp, Vi phạm.
+    """
+    bot = get_bot()
+    if not bot:
+        return
+    cfg = load_config()
+    chat_id = cfg.get("telegram_chat_id", "").strip() or os.getenv("TELEGRAM_CHAT_ID", "").strip()
+    if not chat_id:
+        return
+
+    audit = audit_daily_videos(target_date)
+    grouped = audit["grouped"]
+    has_error = audit["has_error"]
+    error_details = audit["error_details"]
+
+    lines = ["🛡 <b>TÌNH TRẠNG KIỂM ĐỊNH VIDEO ĐÃ ĐĂNG</b>\n"]
+    if not grouped:
+        lines.append("ℹ️ <i>Hôm nay chưa có video nào được đăng để kiểm định.</i>")
+    else:
+        for channel_key, vids in grouped.items():
+            lines.append(f"👤 <b>{channel_key}:</b>")
+            for idx, v in enumerate(vids, 1):
+                shadow_status = "✅ Không (Đề xuất FYP)" if not v["is_shadowban"] else "❌ Có (Bị chặn FYP)"
+                dup_status = "✅ An toàn" if not v["is_duplicate"] else "❌ Bị trùng lặp"
+                violation_status = "✅ Hợp lệ" if not v["is_violation"] else "❌ Vi phạm chính sách"
+                time_label = v.get("created_at", "")
+                lines.append(
+                    f"🎬 #{idx}: <b>{html.escape(v['title'])}</b> ({time_label})\n"
+                    f"  • 👁 {v['views']} Views | ❤️ {v['likes']} Likes\n"
+                    f"  • 🚫 Shadowban: {shadow_status}\n"
+                    f"  • 🚫 Trùng lặp: {dup_status}\n"
+                    f"  • 🚫 Vi phạm: {violation_status}"
+                )
+            lines.append("")
+
+    lines.append("________________________________________\n")
+    if not has_error:
+        lines.append("🎉 <b>100% VIDEO AN TOÀN TUYỆT ĐỐI!</b>\nKhông có video nào bị Shadowban hay vi phạm.")
+    else:
+        lines.append("⚠️ <b>CẢNH BÁO KIỂM ĐỊNH PHÁT HIỆN LỖI:</b>\n" + "\n".join(error_details))
+
+    try:
+        bot.send_message(chat_id, "\n".join(lines))
+    except Exception as e:
+        print(f"[Telegram Audit Report Error]: {e}")
 
 def send_telegram_report_with_buttons(
     video_id: str,
@@ -168,6 +332,23 @@ def _register_handlers(bot: telebot.TeleBot):
 
             threading.Thread(target=_delete_task, daemon=True).start()
 
+        elif data == "kpi:bu1":
+            bot.answer_callback_query(call.id, "🚀 Đang kích hoạt duyệt bù 1 video / kênh...")
+            bot.edit_message_reply_markup(call.message.chat.id, call.message.message_id, reply_markup=None)
+            res = execute_compensation("bu1")
+            bot.send_message(call.message.chat.id, f"🚀 <b>ĐÃ DUYỆT BÙ 1 VIDEO / KÊNH!</b>\nĐang bắt đầu xử lý {res.get('total_planned', 0)} video cho các kênh còn thiếu...")
+
+        elif data == "kpi:bu_all":
+            bot.answer_callback_query(call.id, "⚡️ Đang kích hoạt duyệt bù đủ chỉ tiêu cho tất cả kênh...")
+            bot.edit_message_reply_markup(call.message.chat.id, call.message.message_id, reply_markup=None)
+            res = execute_compensation("bu_all")
+            bot.send_message(call.message.chat.id, f"⚡️ <b>ĐÃ DUYỆT BÙ ĐỦ 2 VIDEO (TẤT CẢ)!</b>\nĐang bắt đầu xử lý {res.get('total_planned', 0)} video cho toàn bộ kênh còn thiếu...")
+
+        elif data == "kpi:skip":
+            bot.answer_callback_query(call.id, "❌ Đã hủy lịch đăng bù hôm nay.")
+            bot.edit_message_reply_markup(call.message.chat.id, call.message.message_id, reply_markup=None)
+            bot.send_message(call.message.chat.id, "❌ <i>Đã ghi nhận: Bỏ qua lịch đăng bù hôm nay.</i>")
+
         elif data == "cmd:list_channels":
             channels = get_all_channels()
             if not channels:
@@ -206,6 +387,29 @@ def _register_handlers(bot: telebot.TeleBot):
             "• /status - Xem trạng thái hệ thống\n"
             "• /add [thông tin kênh] - Thêm kênh quét tự động\n"
         )
+
+    @bot.message_handler(commands=['bu1'])
+    def cmd_bu1(message):
+        res = execute_compensation("bu1")
+        bot.reply_to(message, f"🚀 <b>Đã kích hoạt bù 1 video / kênh!</b> Đang bắt đầu xử lý {res.get('total_planned', 0)} video...")
+
+    @bot.message_handler(commands=['duyet'])
+    def cmd_duyet(message):
+        res = execute_compensation("bu_all")
+        bot.reply_to(message, f"⚡️ <b>Đã kích hoạt bù đủ toàn bộ chỉ tiêu!</b> Đang bắt đầu xử lý {res.get('total_planned', 0)} video...")
+
+    @bot.message_handler(commands=['kpi'])
+    def cmd_kpi(message):
+        send_daily_kpi_report()
+
+    @bot.message_handler(commands=['kiemdinh', 'check'])
+    def cmd_audit(message):
+        send_daily_audit_report()
+
+    @bot.message_handler(func=lambda msg: msg.text and msg.text.strip().upper() in ["OK", "ĐỒNG Ý", "DONG Y", "DUYET"])
+    def cmd_text_ok(message):
+        res = execute_compensation("bu_all")
+        bot.reply_to(message, f"⚡️ <b>Lệnh xác nhận: Đã kích hoạt duyệt bù toàn bộ!</b> Đang bắt đầu xử lý {res.get('total_planned', 0)} video...")
 
     @bot.message_handler(commands=['channels'])
     def list_ch_cmd(message):

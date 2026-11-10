@@ -147,7 +147,7 @@ def generate_seo_metadata(
         try:
             client = genai.Client(api_key=api_key)
             prompt = f"""
-Bạn là TikTok Viral Strategist & Video Optimization Specialist hàng đầu từ Agency Agents (msitarzewski/agency-agents). Áp dụng quy tắc ngắt dòng suy nghĩ (Pattern Interrupt), giật Hook 3s đầu và giữ chân người xem.
+Bạn là chuyên gia Content Creator & Viral SEO hàng đầu thế giới cho TikTok và YouTube Shorts.
 Hãy phân tích thông tin video dưới đây và sáng tạo bộ Metadata SEO hoàn chỉnh tối ưu thuật toán tìm kiếm và đề xuất FYP:
 - Tên file / Chủ đề video: "{clean_topic}"
 - Ngách nội dung (Niche): "{niche_hint if niche_hint else 'Tự động nhận diện theo chủ đề'}"

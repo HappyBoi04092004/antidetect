@@ -35,56 +35,131 @@ def get_profile_lock(profile_name_or_id: str) -> threading.Lock:
     return PROFILE_LOCKS[profile_name_or_id]
 
 # ================= 1. DATABASE MANAGER =================
+def generate_account_id() -> str:
+    """Tự động sinh mã định danh tài khoản nội bộ (ví dụ: acc_72e763)."""
+    return f"acc_{uuid.uuid4().hex[:6]}"
+
+def parse_youtube_channel_input(raw_input: str) -> tuple[str, str]:
+    """
+    Chuẩn hóa đầu vào kênh YouTube Shorts:
+    - @handle (ví dụ: @AdventureCompass-j9r, @geography.ro_yt) -> (URL chuẩn, handle)
+    - Channel ID (ví dụ: UC9dOwg8ZJfwTSg4MLmPWbdA) -> (URL chuẩn, Channel ID)
+    - Full URL (ví dụ: https://www.youtube.com/@AdventureCompass-j9r/shorts) -> (URL chuẩn, handle)
+    """
+    s = raw_input.strip()
+    if not s:
+        return "", ""
+    if s.startswith("@"):
+        clean_handle = s.split("/")[0]
+        return f"https://www.youtube.com/{clean_handle}/shorts", clean_handle
+    if s.startswith("UC") and len(s) >= 20 and not ("/" in s):
+        return f"https://www.youtube.com/channel/{s}/shorts", s
+    if "youtube.com" in s or "youtu.be" in s:
+        import re
+        handle_match = re.search(r'(@[\w\.-]+)', s)
+        handle = handle_match.group(1) if handle_match else ""
+        if not handle:
+            channel_match = re.search(r'channel/(UC[\w-]+)', s)
+            handle = channel_match.group(1) if channel_match else s
+        url = s.rstrip("/")
+        if not url.endswith("/shorts") and "/shorts/" not in url:
+            url += "/shorts"
+        return url, (handle if handle else url)
+    
+    handle = f"@{s.lstrip('@')}"
+    return f"https://www.youtube.com/{handle}/shorts", handle
+
 def init_db():
     conn = sqlite3.connect(DB_PATH)
     conn.execute("""
     CREATE TABLE IF NOT EXISTS videos (
         video_id TEXT PRIMARY KEY,
+        account_id TEXT DEFAULT '',
+        channel_id INTEGER DEFAULT 0,
+        source_handle TEXT DEFAULT '',
         profile_name TEXT,
         profile_dir TEXT,
         proxy_server TEXT,
+        vpn_region TEXT DEFAULT '',
+        tiktok_user TEXT DEFAULT '',
+        tiktok_video_url TEXT DEFAULT '',
         shorts_title TEXT,
         local_4k_path TEXT,
+        quality_str TEXT DEFAULT '',
+        duration REAL DEFAULT 0.0,
+        check_status TEXT DEFAULT '',
         caption TEXT,
         status TEXT,
         yt_status TEXT DEFAULT 'NONE',
         yt_video_url TEXT DEFAULT '',
+        posted_date TEXT DEFAULT '',
+        views INTEGER DEFAULT 0,
+        likes INTEGER DEFAULT 0,
+        is_shadowban INTEGER DEFAULT 0,
+        is_duplicate INTEGER DEFAULT 0,
+        is_violation INTEGER DEFAULT 0,
+        audit_status TEXT DEFAULT 'PENDING',
         created_at TEXT DEFAULT ''
     )
     """)
     conn.execute("""
     CREATE TABLE IF NOT EXISTS channels (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
+        account_id TEXT DEFAULT '',
+        source_handle TEXT DEFAULT '',
         youtube_shorts_url TEXT UNIQUE,
         tiktok_user TEXT,
-        vpn_region TEXT,
+        vpn_region TEXT DEFAULT 'VN',
         profile_name TEXT,
         profile_dir TEXT,
         proxy_server TEXT,
         niche TEXT,
+        daily_target INTEGER DEFAULT 2,
+        status TEXT DEFAULT 'ACTIVE',
         post_to_tiktok INTEGER DEFAULT 1,
         post_to_youtube INTEGER DEFAULT 1,
         created_at TEXT DEFAULT ''
     )
     """)
-    # Migration an toàn
+    # Migration an toàn cho channels
     for col, col_type in [
-        ("yt_status", "TEXT DEFAULT 'NONE'"),
-        ("yt_video_url", "TEXT DEFAULT ''"),
-        ("created_at", "TEXT DEFAULT ''")
-    ]:
-        try:
-            conn.execute(f"ALTER TABLE videos ADD COLUMN {col} {col_type}")
-        except Exception:
-            pass
-
-    for col, col_type in [
+        ("account_id", "TEXT DEFAULT ''"),
+        ("source_handle", "TEXT DEFAULT ''"),
+        ("daily_target", "INTEGER DEFAULT 2"),
+        ("status", "TEXT DEFAULT 'ACTIVE'"),
         ("post_to_tiktok", "INTEGER DEFAULT 1"),
         ("post_to_youtube", "INTEGER DEFAULT 1"),
         ("created_at", "TEXT DEFAULT ''")
     ]:
         try:
             conn.execute(f"ALTER TABLE channels ADD COLUMN {col} {col_type}")
+        except Exception:
+            pass
+
+    # Migration an toàn cho videos
+    for col, col_type in [
+        ("account_id", "TEXT DEFAULT ''"),
+        ("channel_id", "INTEGER DEFAULT 0"),
+        ("source_handle", "TEXT DEFAULT ''"),
+        ("tiktok_user", "TEXT DEFAULT ''"),
+        ("tiktok_video_url", "TEXT DEFAULT ''"),
+        ("vpn_region", "TEXT DEFAULT ''"),
+        ("quality_str", "TEXT DEFAULT ''"),
+        ("duration", "REAL DEFAULT 0.0"),
+        ("check_status", "TEXT DEFAULT ''"),
+        ("posted_date", "TEXT DEFAULT ''"),
+        ("views", "INTEGER DEFAULT 0"),
+        ("likes", "INTEGER DEFAULT 0"),
+        ("is_shadowban", "INTEGER DEFAULT 0"),
+        ("is_duplicate", "INTEGER DEFAULT 0"),
+        ("is_violation", "INTEGER DEFAULT 0"),
+        ("audit_status", "TEXT DEFAULT 'PENDING'"),
+        ("yt_status", "TEXT DEFAULT 'NONE'"),
+        ("yt_video_url", "TEXT DEFAULT ''"),
+        ("created_at", "TEXT DEFAULT ''")
+    ]:
+        try:
+            conn.execute(f"ALTER TABLE videos ADD COLUMN {col} {col_type}")
         except Exception:
             pass
 
@@ -102,15 +177,22 @@ def is_video_processed(video_id: str) -> bool:
 def save_video_record(
     video_id, profile_name, profile_dir, proxy_server,
     shorts_title, local_4k_path, caption, status,
-    yt_status="NONE", yt_video_url=""
+    yt_status="NONE", yt_video_url="",
+    account_id="", source_handle="", tiktok_user="", tiktok_video_url="",
+    vpn_region="VN", quality_str="", duration=0.0, check_status="",
+    posted_date=None, channel_id=0
 ):
     conn = sqlite3.connect(DB_PATH)
     created_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    if not posted_date:
+        posted_date = datetime.now().strftime("%Y-%m-%d")
     conn.execute("""
     INSERT OR REPLACE INTO videos 
-    (video_id, profile_name, profile_dir, proxy_server, shorts_title, local_4k_path, caption, status, yt_status, yt_video_url, created_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    """, (video_id, profile_name, profile_dir, proxy_server, shorts_title, local_4k_path, caption, status, yt_status, yt_video_url, created_at))
+    (video_id, profile_name, profile_dir, proxy_server, shorts_title, local_4k_path, caption, status, yt_status, yt_video_url, created_at,
+     account_id, source_handle, tiktok_user, tiktok_video_url, vpn_region, quality_str, duration, check_status, posted_date, channel_id)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    """, (video_id, profile_name, profile_dir, proxy_server, shorts_title, local_4k_path, caption, status, yt_status, yt_video_url, created_at,
+          account_id, source_handle, tiktok_user, tiktok_video_url, vpn_region, quality_str, duration, check_status, posted_date, channel_id))
     conn.commit()
     conn.close()
 
@@ -158,8 +240,18 @@ def add_tracked_channel(
     proxy_server: str = "",
     niche: str = "",
     post_to_tiktok: int = 1,
-    post_to_youtube: int = 1
+    post_to_youtube: int = 1,
+    account_id: str = "",
+    source_handle: str = "",
+    daily_target: int = 2,
+    status: str = "ACTIVE"
 ):
+    norm_url, parsed_handle = parse_youtube_channel_input(yt_url)
+    if not source_handle:
+        source_handle = parsed_handle
+    if not account_id:
+        account_id = generate_account_id()
+
     if not profile_dir:
         profile_dir = os.path.join(BASE_DIR, "profiles", profile_name.replace(" ", "_"))
     os.makedirs(profile_dir, exist_ok=True)
@@ -167,9 +259,11 @@ def add_tracked_channel(
     conn = sqlite3.connect(DB_PATH)
     conn.execute("""
     INSERT OR REPLACE INTO channels 
-    (youtube_shorts_url, tiktok_user, vpn_region, profile_name, profile_dir, proxy_server, niche, post_to_tiktok, post_to_youtube, created_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    """, (yt_url, tiktok_user, vpn_region.upper(), profile_name, profile_dir, proxy_server, niche, post_to_tiktok, post_to_youtube, created_at))
+    (youtube_shorts_url, tiktok_user, vpn_region, profile_name, profile_dir, proxy_server, niche, post_to_tiktok, post_to_youtube, created_at,
+     account_id, source_handle, daily_target, status)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    """, (norm_url, tiktok_user, vpn_region.upper(), profile_name, profile_dir, proxy_server, niche, post_to_tiktok, post_to_youtube, created_at,
+          account_id, source_handle, daily_target, status.upper()))
     conn.commit()
     conn.close()
 
@@ -182,11 +276,114 @@ def get_all_channels() -> list[dict]:
     conn.close()
     return rows
 
+def get_channel_by_id(channel_id: int) -> dict | None:
+    conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row
+    cur = conn.cursor()
+    cur.execute("SELECT * FROM channels WHERE id = ?", (channel_id,))
+    row = cur.fetchone()
+    conn.close()
+    return dict(row) if row else None
+
+def update_channel_status(channel_id: int, new_status: str):
+    """Cập nhật trạng thái kênh: ACTIVE (Đang hoạt động) hoặc PAUSED (Đang tạm dừng)."""
+    conn = sqlite3.connect(DB_PATH)
+    conn.execute("UPDATE channels SET status = ? WHERE id = ?", (new_status.upper(), channel_id))
+    conn.commit()
+    conn.close()
+
+def update_channel_target(channel_id: int, daily_target: int):
+    """Cập nhật chỉ tiêu số lượng video đăng mỗi ngày (mặc định 2)."""
+    conn = sqlite3.connect(DB_PATH)
+    conn.execute("UPDATE channels SET daily_target = ? WHERE id = ?", (int(daily_target), channel_id))
+    conn.commit()
+    conn.close()
+
+def update_channel_details(channel_id: int, data: dict):
+    conn = sqlite3.connect(DB_PATH)
+    fields = []
+    vals = []
+    for k in ["account_id", "source_handle", "youtube_shorts_url", "tiktok_user", "vpn_region", "profile_name", "niche", "daily_target", "status", "post_to_tiktok", "post_to_youtube"]:
+        if k in data:
+            fields.append(f"{k} = ?")
+            vals.append(data[k])
+    if fields:
+        vals.append(channel_id)
+        conn.execute(f"UPDATE channels SET {', '.join(fields)} WHERE id = ?", vals)
+        conn.commit()
+    conn.close()
+
 def delete_tracked_channel(channel_id: int):
     conn = sqlite3.connect(DB_PATH)
     conn.execute("DELETE FROM channels WHERE id = ?", (channel_id,))
     conn.commit()
     conn.close()
+
+def get_channel_posted_count_today(channel_id: int, target_date: str = None) -> int:
+    """Đếm số video TikTok đã đăng thành công của kênh trong ngày hôm nay."""
+    if not target_date:
+        target_date = datetime.now().strftime("%Y-%m-%d")
+    conn = sqlite3.connect(DB_PATH)
+    cur = conn.cursor()
+    cur.execute("""
+    SELECT COUNT(*) FROM videos 
+    WHERE (channel_id = ? OR profile_name IN (SELECT profile_name FROM channels WHERE id = ?))
+      AND posted_date = ? AND status = 'PUBLISHED'
+    """, (channel_id, channel_id, target_date))
+    count = cur.fetchone()[0]
+    conn.close()
+    return count
+
+def get_all_channels_kpi_summary(target_date: str = None) -> dict:
+    """
+    Thống kê tiến độ toàn bộ kênh theo đúng tài liệu mô tả:
+    - Kênh đã đạt chỉ tiêu: (X/Tổng), liệt kê kênh đạt 2/2 video
+    - Kênh chưa đủ chỉ tiêu: (Y/Tổng), số lượng đã đăng (0/2), thiếu (👉 Thiếu 2), trạng thái ((Đang tạm dừng))
+    - Tổng kết: Cần đăng bù Z video cho Y kênh.
+    """
+    if not target_date:
+        target_date = datetime.now().strftime("%Y-%m-%d")
+    channels = get_all_channels()
+    total_channels = len(channels)
+    completed_channels = []
+    incomplete_channels = []
+    total_missing_videos = 0
+
+    for ch in channels:
+        ch_id = ch["id"]
+        daily_target = ch.get("daily_target", 2) or 2
+        posted = get_channel_posted_count_today(ch_id, target_date)
+        ch_status = (ch.get("status") or "ACTIVE").upper()
+        source_label = ch.get("source_handle") or ch.get("youtube_shorts_url", f"Kênh #{ch_id}")
+        
+        info = {
+            "id": ch_id,
+            "account_id": ch.get("account_id") or f"acc_{ch_id}",
+            "source_handle": source_label,
+            "tiktok_user": ch.get("tiktok_user", ""),
+            "profile_name": ch.get("profile_name", ""),
+            "vpn_region": ch.get("vpn_region", "VN"),
+            "status": ch_status,
+            "daily_target": daily_target,
+            "posted": posted,
+            "missing": max(0, daily_target - posted)
+        }
+
+        if posted >= daily_target:
+            completed_channels.append(info)
+        else:
+            incomplete_channels.append(info)
+            total_missing_videos += info["missing"]
+
+    return {
+        "date": target_date,
+        "total": total_channels,
+        "completed": completed_channels,
+        "completed_count": len(completed_channels),
+        "incomplete": incomplete_channels,
+        "incomplete_count": len(incomplete_channels),
+        "total_missing": total_missing_videos
+    }
 
 # ================= 2. FFMPEG 4K & VIDEO PROCESSING =================
 def edit_and_upscale_4k(raw_path: str, output_path: str) -> dict:
@@ -269,11 +466,11 @@ def remedy_audio_fast(video_4k_path: str, remedied_output_path: str) -> str:
     subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=True, **get_subprocess_kwargs())
     return remedied_output_path
 
-def fetch_latest_short(channel_shorts_url: str) -> dict | None:
-    """Quét và tải video Shorts mới nhất chưa từng được xử lý."""
+def fetch_latest_short(channel_shorts_url: str, max_lookback: int = 10) -> dict | None:
+    """Quét và tải video Shorts mới nhất chưa từng được xử lý (thời lượng chuẩn ≤ 59s)."""
     dl_dir = os.path.join(BASE_DIR, "downloads")
     os.makedirs(dl_dir, exist_ok=True)
-    ydl_info_opts = {'extract_flat': True, 'playlist_items': '1', 'quiet': True}
+    ydl_info_opts = {'extract_flat': True, 'playlist_items': f'1-{max_lookback}', 'quiet': True}
     with yt_dlp.YoutubeDL(ydl_info_opts) as ydl:
         try:
             info = ydl.extract_info(channel_shorts_url, download=False)
@@ -283,13 +480,26 @@ def fetch_latest_short(channel_shorts_url: str) -> dict | None:
 
         if not info or 'entries' not in info or not info['entries']:
             return None
-        video_id = info['entries'][0]['id']
-        video_url = f"https://www.youtube.com/shorts/{video_id}"
 
-        if is_video_processed(video_id):
+        target_id = None
+        for entry in info['entries']:
+            if not entry:
+                continue
+            v_id = entry.get('id')
+            if not v_id or is_video_processed(v_id):
+                continue
+            dur = entry.get('duration')
+            if dur and dur > 65:
+                continue
+            target_id = v_id
+            break
+
+        if not target_id:
             return None
 
-    raw_path = os.path.join(dl_dir, f"{video_id}_raw.mp4")
+        video_url = f"https://www.youtube.com/shorts/{target_id}"
+
+    raw_path = os.path.join(dl_dir, f"{target_id}_raw.mp4")
     ydl_dl_opts = {
         'format': 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best',
         'outtmpl': raw_path,
@@ -299,11 +509,12 @@ def fetch_latest_short(channel_shorts_url: str) -> dict | None:
     with yt_dlp.YoutubeDL(ydl_dl_opts) as ydl:
         full_info = ydl.extract_info(video_url, download=True)
         return {
-            "video_id": video_id,
+            "video_id": target_id,
             "title": full_info.get("title", "Shorts Video"),
             "uploader": full_info.get("uploader", "YouTube Channel"),
             "url": video_url,
-            "raw_path": raw_path
+            "raw_path": raw_path,
+            "duration": full_info.get("duration", 59.0)
         }
 
 # ================= 3. CAMOUFOX BROWSER LAUNCHER =================
@@ -767,14 +978,19 @@ def process_and_upload_local_video(
     post_to_tiktok: bool = True,
     post_to_youtube: bool = True,
     apply_4k_upscale: bool = True,
+    channel_id: int = 0,
+    account_id: str = "",
+    source_handle: str = "",
+    tiktok_user: str = "",
+    source_channel_url: str = "",
     log_callback = None
 ) -> dict:
     """
     Quy trình xử lý hoàn chỉnh từ file video máy tính:
     1. Đo thông số hoặc render upscale 4K bằng FFmpeg (tăng tốc GPU VideoToolbox/NVENC).
-    2. Đăng lên TikTok Studio với Camoufox và xử lý lách bản quyền 2 tầng.
+    2. Đăng lên TikTok Studio với Camoufox và xử lý Content Check Lite (chờ trạng thái HỢP LỆ XANH).
     3. Đăng lên YouTube Shorts nếu được chọn.
-    4. Ghi nhận lịch sử vào SQLite và gửi báo cáo Telegram.
+    4. Ghi nhận lịch sử vào SQLite và gửi báo cáo Telegram TIKTOK BETA.
     """
     def _log(msg: str):
         print(f"[Upload Pipeline]: {msg}")
@@ -838,7 +1054,7 @@ def process_and_upload_local_video(
     screen = profile_data.get("screen", "1920x1080")
     locale = profile_data.get("locale", "")
 
-    # Chuẩn bị Caption
+    # Chuẩn bị Caption & Hashtags
     tt_caption_parts = [clean_title]
     if description.strip():
         tt_caption_parts.append(description.strip())
@@ -890,6 +1106,7 @@ def process_and_upload_local_video(
         yt_video_url = yt_res.get("video_url", "")
 
     # 4. Lưu lịch sử vào SQLite
+    posted_today_str = datetime.now().strftime("%Y-%m-%d")
     save_video_record(
         video_id=video_id,
         profile_name=profile_name,
@@ -900,31 +1117,58 @@ def process_and_upload_local_video(
         caption=tiktok_caption,
         status=tt_action,
         yt_status=yt_action,
-        yt_video_url=yt_video_url
+        yt_video_url=yt_video_url,
+        account_id=account_id,
+        source_handle=source_handle,
+        tiktok_user=tiktok_user,
+        tiktok_video_url="",
+        vpn_region=vpn_region,
+        quality_str=quality_str,
+        duration=duration,
+        check_status="Content Check Lite: HỢP LỆ (XANH)" if tt_action == "PUBLISHED" else tt_check_status,
+        posted_date=posted_today_str,
+        channel_id=channel_id
     )
 
-    # 5. Gửi thông báo Telegram nếu được cấu hình
+    # 5. Gửi thông báo Telegram theo đúng mẫu chuẩn
     try:
-        from telegram_controller import send_telegram_report_with_buttons
-        send_telegram_report_with_buttons(
-            video_id=video_id,
-            action=tt_action,
-            source_channel="📁 Video File Cục Bộ",
-            tiktok_user=f"Profile: {profile_name}",
-            vpn_region=vpn_region,
-            profile_name=profile_name,
-            shorts_title=clean_title,
-            quality_str=quality_str,
-            duration=duration,
-            check_status=tt_check_status,
-            caption_text=tiktok_caption,
-            youtube_url=yt_video_url if yt_video_url else os.path.basename(video_path),
-            yt_status=yt_status,
-            yt_video_url=yt_video_url
-        )
-        _log("🤖 Đã gửi thông báo báo cáo về Telegram!")
+        if tt_action == "PUBLISHED":
+            from telegram_controller import send_tiktok_beta_success_report
+            send_tiktok_beta_success_report(
+                source_handle=source_handle or "Kênh YouTube Shorts",
+                account_id=account_id or "acc_default",
+                tiktok_user=tiktok_user or f"@{profile_name}",
+                vpn_region=vpn_region,
+                profile_name=profile_name,
+                shorts_title=clean_title,
+                quality_str=quality_str,
+                duration=duration,
+                check_status="Content Check Lite: HỢP LỆ (XANH)",
+                caption_text=tiktok_caption,
+                youtube_url=source_channel_url or yt_video_url or "https://youtube.com"
+            )
+            _log("🎉 Đã gửi thông báo ĐĂNG VIDEO THÀNH CÔNG (TikTok Beta) về Telegram!")
+        else:
+            from telegram_controller import send_telegram_report_with_buttons
+            send_telegram_report_with_buttons(
+                video_id=video_id,
+                action=tt_action,
+                source_channel=source_handle or "📁 Video File Cục Bộ",
+                tiktok_user=tiktok_user or f"Profile: {profile_name}",
+                vpn_region=vpn_region,
+                profile_name=profile_name,
+                shorts_title=clean_title,
+                quality_str=quality_str,
+                duration=duration,
+                check_status=tt_check_status,
+                caption_text=tiktok_caption,
+                youtube_url=yt_video_url if yt_video_url else source_channel_url,
+                yt_status=yt_status,
+                yt_video_url=yt_video_url
+            )
+            _log("🤖 Đã gửi thông báo báo cáo về Telegram!")
     except Exception as e:
-        pass
+        _log(f"⚠️ Không thể gửi Telegram: {e}")
 
     return {
         "video_id": video_id,
@@ -936,13 +1180,194 @@ def process_and_upload_local_video(
         "video_path": ready_video_path
     }
 
-# ================= 8. BACKGROUND AUTO SCANNER =================
+# ================= 8. BACKGROUND AUTO SCANNER & COMPENSATION =================
 _scanner_running = False
 _scanner_thread = None
 
 def is_scanner_running() -> bool:
     global _scanner_running
     return _scanner_running
+
+def run_single_channel_download_and_post(channel_id: int, log_callback=None) -> dict:
+    """
+    Tự động quét tải 1 video mới từ kênh YouTube Shorts nguồn,
+    xử lý upscale 4K/kiểm tra ≤ 59s, tạo caption/hashtag, và đăng tải sang TikTok.
+    """
+    def _log(msg):
+        print(f"[Run Channel #{channel_id}]: {msg}")
+        if log_callback:
+            try:
+                log_callback(msg)
+            except Exception:
+                pass
+
+    ch = get_channel_by_id(channel_id)
+    if not ch:
+        _log(f"❌ Không tìm thấy cấu hình kênh có ID {channel_id}")
+        return {"success": False, "error": "Kênh không tồn tại"}
+
+    yt_url = ch.get("youtube_shorts_url", "")
+    if not yt_url:
+        return {"success": False, "error": "Kênh chưa cấu hình link YouTube Shorts"}
+
+    _log(f"🔎 Đang quét video mới nhất từ: {yt_url}...")
+    item = fetch_latest_short(yt_url)
+    if not item:
+        _log(f"⚠️ Không tìm thấy video Shorts mới (thời lượng ≤ 59s và chưa xử lý) từ {yt_url}")
+        return {"success": False, "error": "Không có video mới phù hợp"}
+
+    _log(f"✨ Phát hiện video Shorts: '{item['title']}'. Tiến hành tải và xử lý...")
+    dl_dir = os.path.join(BASE_DIR, "downloads")
+    os.makedirs(dl_dir, exist_ok=True)
+    out_4k = os.path.join(dl_dir, f"{item['video_id']}_4k.mp4")
+    stats = edit_and_upscale_4k(item["raw_path"], out_4k)
+
+    # Sinh caption & hashtag theo thị trường đích
+    vpn_region = ch.get("vpn_region", "VN")
+    seo_meta = generate_seo_metadata(item["title"], target_region=vpn_region, niche_hint=ch.get("niche", ""))
+    title = seo_meta.get("title", item["title"])
+    desc = seo_meta.get("description", "")
+    tags = seo_meta.get("hashtags", [])
+
+    profile_data = {
+        "name": ch.get("profile_name", "AutoProfile"),
+        "path": ch.get("profile_dir", ""),
+        "proxy": ch.get("proxy_server", ""),
+        "os": "windows",
+        "screen": "1920x1080",
+        "locale": ""
+    }
+
+    res = process_and_upload_local_video(
+        video_path=out_4k,
+        title=title,
+        description=desc,
+        hashtags=tags,
+        profile_data=profile_data,
+        vpn_region=vpn_region,
+        post_to_tiktok=bool(ch.get("post_to_tiktok", 1)),
+        post_to_youtube=bool(ch.get("post_to_youtube", 1)),
+        apply_4k_upscale=False,  # Đã upscale 4K
+        channel_id=ch["id"],
+        account_id=ch.get("account_id", ""),
+        source_handle=ch.get("source_handle", ""),
+        tiktok_user=ch.get("tiktok_user", ""),
+        source_channel_url=item.get("url", yt_url),
+        log_callback=log_callback
+    )
+    return {"success": True, "details": res}
+
+def execute_compensation(mode: str = "bu1", log_callback=None):
+    """
+    Thực thi duyệt đăng bù:
+    - mode == 'bu1': Đăng bù 1 video cho mỗi kênh đang thiếu
+    - mode == 'bu_all': Đăng bù đủ số lượng còn thiếu cho tất cả các kênh
+    Chạy trong một luồng nền để không chặn giao diện và Telegram bot.
+    """
+    def _worker():
+        def _log(msg):
+            print(f"[Đăng Bù]: {msg}")
+            if log_callback:
+                try:
+                    log_callback(msg)
+                except Exception:
+                    pass
+
+        summary = get_all_channels_kpi_summary()
+        incomplete = summary.get("incomplete", [])
+        if not incomplete:
+            _log("✅ Tất cả các kênh đã đạt đủ chỉ tiêu, không cần đăng bù.")
+            return
+
+        _log(f"🚀 Bắt đầu chạy tiến trình đăng bù (Chế độ: {mode}) cho {len(incomplete)} kênh...")
+        for ch in incomplete:
+            ch_id = ch["id"]
+            missing_count = ch.get("missing", 1)
+            runs = 1 if mode == "bu1" else missing_count
+            _log(f"👉 Kênh '{ch.get('source_handle')}' ({ch.get('account_id')}): Cần đăng bù {runs} video...")
+            for step in range(runs):
+                _log(f"--- Đang thực hiện video bù #{step + 1}/{runs} cho kênh #{ch_id} ---")
+                try:
+                    res = run_single_channel_download_and_post(ch_id, log_callback=log_callback)
+                    if not res.get("success"):
+                        _log(f"⚠️ Video bù #{step + 1} không thành công: {res.get('error')}")
+                except Exception as e:
+                    _log(f"❌ Lỗi khi đăng bù kênh #{ch_id}: {e}")
+                time.sleep(5)
+        _log("🎉 Hoàn tất quy trình đăng bù chỉ tiêu!")
+
+    t = threading.Thread(target=_worker, daemon=True)
+    t.start()
+
+def audit_daily_videos(target_date: str = None, log_callback=None) -> dict:
+    """
+    Kiểm định danh sách video TikTok đã đăng trong ngày:
+    - Trích xuất views, likes, shadowban (đề xuất FYP), trùng lặp, vi phạm
+    - Gom nhóm theo từng kênh/Profile
+    - Trả về cấu trúc tổng hợp phục vụ gửi báo cáo Telegram TIKTOK THÔNG BÁO.
+    """
+    if not target_date:
+        target_date = datetime.now().strftime("%Y-%m-%d")
+
+    conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row
+    cur = conn.cursor()
+    cur.execute("""
+    SELECT v.*, c.source_handle, c.account_id as ch_acc_id, c.tiktok_user as ch_tt_user, c.profile_name as ch_prof
+    FROM videos v
+    LEFT JOIN channels c ON v.channel_id = c.id
+    WHERE v.posted_date = ? AND v.status = 'PUBLISHED'
+    ORDER BY v.created_at ASC
+    """, (target_date,))
+    rows = [dict(r) for r in cur.fetchall()]
+    conn.close()
+
+    grouped = {}
+    has_error = False
+    error_details = []
+
+    for r in rows:
+        vid_id = r["video_id"]
+        title = r.get("shorts_title") or f"Video {vid_id}"
+        acc_id = r.get("account_id") or r.get("ch_acc_id") or "acc_n/a"
+        handle = r.get("source_handle") or r.get("tiktok_user") or r.get("ch_tt_user") or "Kênh TikTok"
+        prof_name = r.get("profile_name") or r.get("ch_prof") or "Profile"
+        group_key = f"{handle} ({prof_name})"
+
+        views = r.get("views", 0)
+        likes = r.get("likes", 0)
+        is_shadowban = bool(r.get("is_shadowban", 0))
+        is_duplicate = bool(r.get("is_duplicate", 0))
+        is_violation = bool(r.get("is_violation", 0))
+
+        if is_shadowban or is_duplicate or is_violation:
+            has_error = True
+            err_reasons = []
+            if is_shadowban: err_reasons.append("Shadowban (Bị chặn FYP)")
+            if is_duplicate: err_reasons.append("Trùng lặp nội dung")
+            if is_violation: err_reasons.append("Vi phạm tiêu chuẩn cộng đồng")
+            error_details.append(f"• <b>{handle}</b> - '{title}': {', '.join(err_reasons)}")
+
+        if group_key not in grouped:
+            grouped[group_key] = []
+        grouped[group_key].append({
+            "video_id": vid_id,
+            "title": title,
+            "views": views,
+            "likes": likes,
+            "is_shadowban": is_shadowban,
+            "is_duplicate": is_duplicate,
+            "is_violation": is_violation,
+            "created_at": r.get("created_at", "")
+        })
+
+    return {
+        "date": target_date,
+        "grouped": grouped,
+        "has_error": has_error,
+        "error_details": error_details,
+        "total": len(rows)
+    }
 
 def start_auto_scanner(log_callback=None):
     global _scanner_running, _scanner_thread
@@ -973,53 +1398,26 @@ def start_auto_scanner(log_callback=None):
             for ch in channels:
                 if not _scanner_running:
                     break
+
+                ch_status = (ch.get("status") or "ACTIVE").upper()
+                if ch_status == "PAUSED":
+                    continue
+
+                daily_target = ch.get("daily_target", 2) or 2
+                posted_today = get_channel_posted_count_today(ch["id"])
+                if posted_today >= daily_target:
+                    continue
+
                 yt_url = ch.get("youtube_shorts_url", "")
                 if not yt_url:
                     continue
 
                 try:
-                    _log(f"🔎 Đang kiểm tra video mới từ kênh: {yt_url}...")
-                    item = fetch_latest_short(yt_url)
-                    if not item:
-                        continue
-
-                    _log(f"✨ Phát hiện video mới: '{item['title']}'. Tiến hành xử lý...")
-                    dl_dir = os.path.join(BASE_DIR, "downloads")
-                    out_4k = os.path.join(dl_dir, f"{item['video_id']}_4k.mp4")
-                    stats = edit_and_upscale_4k(item["raw_path"], out_4k)
-
-                    # Sinh caption AI
-                    vpn_region = ch.get("vpn_region", "VN")
-                    seo_meta = generate_seo_metadata(item["title"], target_region=vpn_region, niche_hint=ch.get("niche", ""))
-                    title = seo_meta.get("title", item["title"])
-                    desc = seo_meta.get("description", "")
-                    tags = seo_meta.get("hashtags", [])
-
-                    profile_data = {
-                        "name": ch.get("profile_name", "AutoProfile"),
-                        "path": ch.get("profile_dir", ""),
-                        "proxy": ch.get("proxy_server", ""),
-                        "os": "windows",
-                        "screen": "1920x1080",
-                        "locale": ""
-                    }
-
-                    process_and_upload_local_video(
-                        video_path=out_4k,
-                        title=title,
-                        description=desc,
-                        hashtags=tags,
-                        profile_data=profile_data,
-                        vpn_region=vpn_region,
-                        post_to_tiktok=bool(ch.get("post_to_tiktok", 1)),
-                        post_to_youtube=bool(ch.get("post_to_youtube", 1)),
-                        apply_4k_upscale=False,  # Đã upscale rồi
-                        log_callback=log_callback
-                    )
+                    _log(f"🔎 Quét kênh '{ch.get('source_handle')}' (Đã đăng: {posted_today}/{daily_target})...")
+                    run_single_channel_download_and_post(ch["id"], log_callback=log_callback)
                 except Exception as e:
                     _log(f"❌ Lỗi khi quét kênh {yt_url}: {e}")
 
-            # Chờ chu kỳ quét
             cfg = load_config()
             interval = cfg.get("scan_interval_seconds", 600)
             _log(f"💤 Nghỉ {interval} giây trước lượt quét kế tiếp...")
@@ -1034,6 +1432,60 @@ def start_auto_scanner(log_callback=None):
 def stop_auto_scanner():
     global _scanner_running
     _scanner_running = False
+
+# ================= 9. DAILY SCHEDULER (22:01 KPI & 22:03 AUDIT) =================
+_scheduler_running = False
+_scheduler_thread = None
+
+def start_daily_scheduler(log_callback=None):
+    global _scheduler_running, _scheduler_thread
+    if _scheduler_running:
+        return
+    _scheduler_running = True
+
+    def _scheduler_loop():
+        def _log(msg):
+            print(f"[Daily Scheduler]: {msg}")
+            if log_callback:
+                try:
+                    log_callback(msg)
+                except Exception:
+                    pass
+
+        _log("⏰ Bộ lập lịch KPI (22:01) & Kiểm định (22:03) đã sẵn sàng...")
+        last_kpi_day = ""
+        last_audit_day = ""
+
+        while _scheduler_running:
+            now = datetime.now()
+            today_str = now.strftime("%Y-%m-%d")
+            current_time_str = now.strftime("%H:%M")
+
+            if current_time_str == "22:01" and last_kpi_day != today_str:
+                _log("📊 [22:01] Tự động kích hoạt Báo cáo Chỉ tiêu (KPI) & Duyệt Đăng bù...")
+                try:
+                    from telegram_controller import send_daily_kpi_report
+                    send_daily_kpi_report(today_str)
+                    last_kpi_day = today_str
+                except Exception as e:
+                    _log(f"❌ Lỗi gửi báo cáo KPI 22:01: {e}")
+
+            if current_time_str == "22:03" and last_audit_day != today_str:
+                _log("🛡 [22:03] Tự động kích hoạt Báo cáo Kiểm định Video...")
+                try:
+                    from telegram_controller import send_daily_audit_report
+                    send_daily_audit_report(today_str)
+                    last_audit_day = today_str
+                except Exception as e:
+                    _log(f"❌ Lỗi gửi báo cáo kiểm định 22:03: {e}")
+
+            time.sleep(20)
+
+    _scheduler_thread = threading.Thread(target=_scheduler_loop, daemon=True)
+    _scheduler_thread.start()
+
+# Tự động khởi động Daily Scheduler khi khởi động ứng dụng
+start_daily_scheduler()
 
 # Khởi tạo DB ngay khi nạp module
 init_db()
